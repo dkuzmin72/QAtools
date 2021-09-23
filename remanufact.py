@@ -15,9 +15,8 @@ from configparser import ConfigParser
 from copy import copy
 from multiprocessing import Pool
 
-log = 0
-dryrun = 0
 UFMAPL_PATH = '/auto/UFM/UFMAPL*'
+HA_WAIT = 20
 
 class Remanufacture:
     def __init__(self, options):
@@ -45,7 +44,7 @@ class Remanufacture:
         # 5. In-service upgrade or just upgrade
         #    Check that UFMAPL was upgraded successfully
         # 6. Set additional parameters (for example SHARP)
-        logging.info('Start')
+        logging.info('Started')
         print("Started remanufacture")
 
         for version in self.options['versions']:
@@ -92,7 +91,7 @@ class Remanufacture:
             print("Remanufacturing: node name was not provived - skipping")
             return
         print("Remanufacturing node: " + apl_node + " to version " + version)
-        logging.info("Remanufacturing node: " + apl_node + " to version " + version)
+        logging.debug("Remanufacturing node: " + apl_node + " to version " + version)
         ufm_path,ufm_iso = get_ufmapl_manufacture_iso(version)
         rnd = str(random.randint(10001, 99999))
         iso = ufm_path + '/' + ufm_iso
@@ -228,12 +227,12 @@ LABEL linux
         execute('sudo rm -rf ' + workdir)
 
         print("Rebooting " + apl_node + " after Manufacture is done")
-        logging.info("Rebooting " + apl_node + " after Manufacture is done")
+        logging.debug("Rebooting " + apl_node + " after Manufacture is done")
         reboot(apl_node)
 
         wait_for_ufmapl(apl_node)
 
-        logging.info("Remanufacturing node: " + apl_node + " to version " + version + " Done!")
+        logging.info("Remanufactured " + apl_node + " to version " + version)
 
     def remanufacture(self):
         nodes = []
@@ -248,14 +247,17 @@ LABEL linux
         self.check_ufm_version(self.remanufacture_version)
 
 
-    def init_ufmapl_node(self, apl_node, apl_bond):
+    def init_ufmapl_node(self, args):
+        apl_node = args[0]
+        apl_bond = args[1]
         if not apl_node or len(apl_node) == 0:
             print("Init UFMAPL: node name was not provided - skipping")
             logging.warning("Init UFMAPL: node name was not provided - skipping")
             return
         print("Inititializing UFM Appliance on node " + apl_node)
-        logging.info("Inititializing UFM Appliance on node " + apl_node)
+        logging.debug("Inititializing UFM Appliance on node " + apl_node)
         passwd = self.options['admin_passwd']
+        monitor_passwd = self.options['monitor_passwd']
         try:
             cmd = 'ssh admin@' + apl_node
             logging.debug("Executing: " + cmd)
@@ -300,7 +302,7 @@ LABEL linux
             # Step 7: Monitor password (Must be typed)?
             logging.debug("Expecting Monitor")
             apl.expect('Monitor')
-            apl.sendline(passwd_monitor)
+            apl.sendline(monitor_passwd) # should be passwd_monitor
             # Step 7: Confirm monitor password?
             logging.debug("Expecting Confirm")
             apl.expect('Confirm')
@@ -318,7 +320,7 @@ LABEL linux
 
             apl.sendline('exit')
 
-            logging.info("Inititializing UFM Appliance on node " + apl_node + " Done!")
+            logging.info("Initialized UFM Appliance on node " + apl_node)
 
         except pexpect.EOF:
             print("Initializing UFM Appliance. Got EOF")
@@ -328,13 +330,19 @@ LABEL linux
             logging.error("Initializing UFM Appliance. Got TIMEOUT")
 
     def init_ufmapl(self):
-        self.init_ufmapl_node(self.options['apl_master'], self.options['master_bond'])
-        self.init_ufmapl_node(self.options['apl_slave'], self.options['slave_bond'])
-        self.init_ufmapl_node(self.options['apl_sm_only'], self.options['sm_only_bond'])
+        arguments = []
+        arguments.append( (self.options['apl_master'], self.options['master_bond']) )
+        arguments.append( (self.options['apl_slave'], self.options['slave_bond']) )
+        arguments.append( (self.options['apl_sm_only'], self.options['sm_only_bond']) )
+        with Pool(processes=3) as pool:
+            result = pool.map(self.init_ufmapl_node, arguments)
 
         self.license_install() # plus license check
 
-    def check_apl_version(self, apl_node, version, print_message = True):
+    def check_apl_version(self, args):
+        apl_node = args[0]
+        version  = args[1]
+        print_message = args[2]
         if not apl_node or len(apl_node) == 0 or not version or len(version) == 0:
             print("Checking Appliance version: node name was not provided - skipping")
             logging.warning("Checking Appliance version: node name was not provided - skipping")
@@ -350,7 +358,7 @@ LABEL linux
             if ver in version:
                 if print_message:
                     print("\tVersion is correct:", apl_node, " Got: ", ver)
-                    logging.info("Version on node " + apl_node + " is correct: " + ver)
+                    logging.info("Veirified UFMAPL version on node " + apl_node + " is correct: " + ver)
                 return True
         if print_message:
             print("Incorrect version on :", apl_node," Expected: ", version, " But got: ", ver)
@@ -360,19 +368,12 @@ LABEL linux
     def check_ufm_version(self, version):
         if not version or len(version) == 0:
             return
-        self.check_apl_version(self.options['apl_master'], version)
-        self.check_apl_version(self.options['apl_slave'],  version)
-        self.check_apl_version(self.options['apl_sm_only'], version)
-
-    def license_install_on_node(self, node):
-        if not node or len(node) == 0:
-            print("License install: node name was not provided - skipping")
-            return
-        print("Installing License on node: " + node)
-        logging.info("Installing License on node: " + node)
-        cmd = 'sshpass -p ' + self.options['admin_passwd'] + ' ssh admin@' + node + ' cli -h \\"enable\\" \\"configure terminal\\" \\"ufm license install scp://root:3tango@10.209.27.114:/.autodirect/mtrswgwork/refato/lic/volt-ufm-license_evaluation_adv_good_date.lic\\" 2>/dev/null'
-        execute(cmd)
-#        logging.info("Installed license on node " + node)
+        arguments = []
+        arguments.append( (self.options['apl_master'], version, True) )
+        arguments.append( (self.options['apl_slave'], version, True) )
+        arguments.append( (self.options['apl_sm_only'], version, True) )
+        with Pool(processes=3) as pool:
+            result = pool.map(self.check_apl_version, arguments)
 
     def check_license_on_node(self, node):
         if not node or len(node) == 0:
@@ -381,24 +382,33 @@ LABEL linux
             return
         print("Checking License on node: " + node)
         cmd = 'sshpass -p ' + self.options['admin_passwd'] + ' ssh admin@' + node + ' cli -h \\"show ufm status\\" 2>/dev/null | grep license'
-#        print("Executing: " + cmd)
-#        out = os.popen(cmd).read().strip()
         out = execute(cmd)
         if "No valid license" in out:
-            print("ERROR: License was not installed properly on: ", node)
-            logging.error("ERROR: License was not installed properly on: ", node)
+            print("ERROR: License was not installed properly on: " + node)
+            logging.error("ERROR: License was not installed properly on: " + node)
         else:
-            print("License installed properly on: ", node)
-            logging.info("License installed properly on: ", node)
+            print("License installed properly on: " + node)
+            logging.info("License installed properly on: " + node)
+
+    def license_install_on_node(self, node):
+        if not node or len(node) == 0:
+            print("License install: node name was not provided - skipping")
+            return
+        print("Installing License on node: " + node)
+        logging.debug("Installing License on node: " + node)
+        cmd = 'sshpass -p ' + self.options['admin_passwd'] + ' ssh admin@' + node + ' cli -h \\"enable\\" \\"configure terminal\\" \\"ufm license install scp://root:3tango@10.209.27.114:/.autodirect/mtrswgwork/refato/lic/volt-ufm-license_evaluation_adv_good_date.lic\\" 2>/dev/null'
+        execute(cmd)
+
+        self.check_license_on_node(node)
+
 
     def license_install(self):
-        self.license_install_on_node(self.options['apl_master'])
-        self.license_install_on_node(self.options['apl_slave'])
-        self.license_install_on_node(self.options['apl_sm_only'])
-
-        self.check_license_on_node(self.options['apl_master'])
-        self.check_license_on_node(self.options['apl_slave'])
-        self.check_license_on_node(self.options['apl_sm_only'])
+        nodes = []
+        nodes.append(self.options['apl_master'])
+        nodes.append(self.options['apl_slave'])
+        nodes.append(self.options['apl_sm_only'])
+        with Pool(processes=3) as pool:
+            result = pool.map(self.license_install_on_node, nodes)
 
     def configure_sm_only_node(self, node):
         if not node or len(node) == 0:
@@ -406,7 +416,7 @@ LABEL linux
             logging.warning("SM only node was not provided - skipping")
             return
         print("SM ONLY: Configuring " + node)
-        logging.info("SM ONLY: Configuring " + node)
+        logging.debug("SM ONLY: Configuring " + node)
         try:
             cmd = 'ssh admin@' + node
             apl = pexpect.spawn(cmd)
@@ -441,7 +451,7 @@ LABEL linux
             apl.sendline('exit')
             apl.sendline('exit')
 
-            logging.info("SM ONLY: Configuring " + node + " Done!")
+            logging.info("SM ONLY node " + node + "  configured")
 
         except pexpect.EOF:
             print("SM ONLY: Configuring - Got EOF.")
@@ -457,7 +467,7 @@ LABEL linux
             logging.warning("Configuring HA - node name was not provided - skipping")
             return
         print("Configuring HA on node " + master)
-        logging.info("Configuring HA on node " + master)
+        logging.debug("Configuring HA on node " + master)
         try:
             logging.debug("MASTER: Entering the node")
             cmd = 'ssh admin@' + master
@@ -541,7 +551,7 @@ LABEL linux
             apl.sendline('exit')
             apl.sendline('exit')
 
-            logging.info("Configuring HA on node " + master + " Done!")
+            logging.info("HA mode configured on master node " + master)
 
         except pexpect.EOF:
             logging.error("Setting HA parameters on master. Got EOF.")
@@ -554,7 +564,7 @@ LABEL linux
             logging.warning("Configuring slave HA : node name was not provided - skipping")
             return
         print("Configuring HA on slave node " + slave_node)
-        logging.info("Configuring HA on slave node " + slave_node)
+        logging.debug("Configuring HA on slave node " + slave_node)
         try:
             logging.debug("SLAVE: Entering the node")
             cmd = 'ssh admin@' + slave_node
@@ -587,7 +597,7 @@ LABEL linux
             apl.sendline('exit')
             apl.sendline('exit')
 
-            logging.info("Configuring HA on slave node " + slave_node + " Done!")
+            logging.info("HA configured on slave node " + slave_node)
 
         except pexpect.EOF:
             logging.error("Setting HA parameters on slave. Got EOF")
@@ -605,13 +615,19 @@ LABEL linux
 
         cmd = 'sshpass -p ' + self.options['admin_passwd'] + ' ssh admin@' + node + ' cli -h \\"show ufm status\\" 2>/dev/null | grep "High Availability Status" '
         print("Waiting for HA status is OK ", end='')
-        logging.info("Waiting for HA status is OK ")
-# add timeout here
+        logging.debug("Waiting for HA status is OK - timeout 15 min")
+        timeout = 15*60 # 15 minutes is more than enough
+        timer = 0
         while out.lower() != "ok":
             out = execute(cmd)
             out = out.split()[3]
-            time.sleep(10)
+            time.sleep(HA_WAIT)
+            timer += HA_WAIT
             print('.', end='')
+            if timer > timeout:
+                print("HA enabling exceeded timeout. Aborting")
+                logging.error("HA enabling exceeded timeout. Aborting")
+                exit(-1)
         print("")
         print("High Availability Status: " + out)
         logging.info("High Availability Status: " + out)
@@ -629,7 +645,7 @@ LABEL linux
             logging.debug("Skip takover step - master node name is empty")
             return
         print("Doing takover on the node: " + master)
-        logging.info("Doing takover on the node: " + master)
+        logging.debug("Doing takover on the node: " + master)
         try:
             logging.debug("MASTER: Entering the node")
             cmd = 'ssh admin@' + master
@@ -655,41 +671,55 @@ LABEL linux
             apl.sendline('exit')
             apl.sendline('exit')
 
-            logging.info("Doing takover on the node: " + master + " Done!")
+            logging.info("Takover done on the node: " + master)
 
         except pexpect.EOF:
             logging.error("Doing takeover on master. Got EOF.")
         except pexpect.TIMEOUT:
             logging.error("Doing takeover on master. Got TIMEOUT")
 
-    def inservice_upgrade_node(self, node, version):
+    def inservice_upgrade_node(self, args):
+        node = args[0]
+        version = args[1]
         if not node or len(node) == 0 or not version or len(version) == 0:
             print("Inservice upgrade: node name was not provided - skipping")
             logging.debug("Inservice upgrade: node name was not provided - skipping")
             return
-        if self.check_apl_version(node, version, False):
+        if self.check_apl_version((node, version, False)):
             print("Inservice upgrade: version " + version + " is already installed on node " + node + ". Skipped.")
             logging.debug("Inservice upgrade: version " + version + " is already installed on node " + node + ". Skipped.")
             return
 
         print("Inservice upgrade on node: " + node)
-        logging.info("Inservice upgrade on node: " + node)
+        logging.debug("Inservice upgrade on node: " + node)
         image_path,image_name = get_ufmapl_image(version)
-        cmd = 'sshpass -p ' + self.options['admin_passwd'] + ' ssh admin@' + node + ' cli -h \\"enable\\" \\"configure terminal\\" \\"image fetch scp://dkuzmin:dkuzmin11@r-hpc-hn01' + image_path + '/' + image_name + '\\"  \\"image install ' + image_name + '\\"  \\"image boot next\\"  \\"configuration write\\"  \\"reload\\" 2>/dev/null'
+        cmd = 'sshpass -p ' + self.options['admin_passwd'] + ' ssh admin@' + node + ' cli -h \\"enable\\" \\"configure terminal\\" \\"image fetch scp://dkuzmin:dkuzmin11@r-hpc-hn01' + image_path + '/' + image_name + '\\"  \\"image install ' + image_name + '\\"  \\"image boot next\\"  \\"configuration write\\"  2>/dev/null'
+        execute(cmd)
+
+    def reload_node(self, node, version):
+        cmd = 'sshpass -p ' + self.options['admin_passwd'] + ' ssh admin@' + node + ' cli -h \\"enable\\" \\"configure terminal\\"  \\"reload\\" 2>/dev/null'
         execute(cmd)
         time.sleep(120) # rebooting is not so fast
 
         wait_for_ufmapl(node)
+        logging.info("Inservice upgrade finished on node: " + node)
 
         time.sleep(2) # wait couple seconds to wake up
-        self.check_apl_version(node, version)
+        self.check_apl_version((node, version, True))
 
 
     def inservice_upgrade(self, version):
-# think about run fetching in parallel
-        self.inservice_upgrade_node(self.options['apl_slave'],  version)
-        self.inservice_upgrade_node(self.options['apl_master'], version)
-        self.inservice_upgrade_node(self.options['apl_sm_only'], version)
+        arguments = []
+        arguments.append( (self.options['apl_master'], version) )
+        arguments.append( (self.options['apl_slave'], version) )
+        arguments.append( (self.options['apl_sm_only'], version) )
+        with Pool(processes=3) as pool:
+            result = pool.map(self.inservice_upgrade_node, arguments)
+
+        # do NOT run this in parallel
+        self.reload_node(self.options['apl_slave'], version)
+        self.reload_node(self.options['apl_master'], version)
+        self.reload_node(self.options['apl_sm_only'], version)
 
         self.do_takeover(self.options['apl_master'])
 
@@ -716,17 +746,17 @@ def get_ufmapl_manufacture_iso(version):
     if len(files) == 0:
         print("Could not find iso file for UFM Appliance version " + version)
         logging.error("Could not find iso file for UFM Appliance version " + version)
-        return(None, None)
+        exit(-1)
+#        return(None, None)
     if len(files) == 1:
         path,delim,name = files[0].rpartition('/')
-#        cmd = 'ls -l ' + files[0]
-#        execute(cmd)
         logging.debug(" Found iso: " + path + "/" + name)
         return (path, name)
     else:
         print("Found too many iso files suitable for this version: "+ version)
         logging.error("Found too many iso files suitable for this version: "+ version)
-        return(None, None)
+        exit(-1)
+#        return(None, None)
 
 def get_ufmapl_image(version):
     ufm_path = UFMAPL_PATH + version + '_*/*' + version + '*.img'
@@ -734,17 +764,17 @@ def get_ufmapl_image(version):
     if len(files) == 0:
         print("Could not find image file for UFM Appliance version " + version)
         logging.error("Could not find iso file for UFM Appliance version " + version)
-        return(None, None)
+        exit(-1)
+#        return(None, None)
     if len(files) == 1:
         path,delim,name = files[0].rpartition('/')
-#        cmd = 'ls -l ' + files[0]
-#        execute(cmd)
         logging.debug(" Found image: " + path + "/" + name)
         return (path, name)
     else:
         print("Found too many image files suitable for this version: " + version)
         logging.error("Found too many image files suitable for this version: "+ version)
-        return(None, None)
+        exit(-1)
+#        return(None, None)
 
 def reboot(apl_node):
     cmd = 'ipmitool -I lanplus -H  ' + apl_node + '-ilo  -U admin -P admin power reset 2>/dev/null'
@@ -767,8 +797,9 @@ dict_keys ={
     'ufmapl_update1_version'       : None,
     'ufmapl_update2_version'       : None,
     'ufmapl_update3_version'       : None,
-    'versions'                      : None,
-    'admin_passwd'           : None
+    'versions'                     : None,
+    'admin_passwd'                 : None,
+    'monitor_passwd'               : None
 }
 
 
@@ -839,6 +870,7 @@ class INI:
         self.options['sm_only_bond']  = config['APL_SM_ONLY']['bond'].strip()
 
         self.options['admin_passwd']  = config['PASSWD']['admin_passwd'].strip()
+        self.options['monitor_passwd']  = config['PASSWD']['monitor_passwd'].strip()
 
         self.options['root_guid1']   = int(config['ROOT_GUIDS']['guid1'].strip(), 0)
         self.options['root_guid2']   = int(config['ROOT_GUIDS']['guid2'].strip(), 0)
@@ -849,19 +881,9 @@ class INI:
                 print(key + ' => ' + str(self.options[key]))
 
 
-# can be removed?
-def execute_system(cmd):
-    logging.debug("Executing: " + cmd)
-    # was os.system(cmd)
-    out = ""
-    exe = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-    out = exe.stdout.read().strip().decode('utf-8')
-    return out
-
-
 
 def execute(cmd):
-    logging.debug("Executing: " + cmd)
+    logging.debug("CMD: " + cmd)
     out = ""
     exe = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
     out = exe.stdout.read().strip().decode('utf-8')
@@ -878,25 +900,12 @@ def get_mac_address(node):
     mac = execute(cmd)
     return mac
 
-def dryrun():
-    return dryrun
-
-def set_dryrun(val):
-    dryrun = val
-
-def log():
-    return log
-
-def set_log(val):
-    log = val
-
 
 # TODO
-# Add monitor passwd
 # check that everthing is good after upgrade
 # ask Refat about REST API command to check GUI workability
-# check /var/log/console.log
-# check /var/log/messages
+# check /var/log/console.log  | show ufm console log  | show ufm log | grep ERROR  /opt/ufm/log/console.log - requires fae lic   | what about event.log or ufm.log
+# check /var/log/messages - any method to get this not using fae lic - what should I look for
 # Get more info how to do upgrade via IPv6 (Ariel)
 if __name__ == "__main__":
 
@@ -906,20 +915,10 @@ if __name__ == "__main__":
         sys.exit(-1)
 
     args = argparse.ArgumentParser(description='A tool to remanufacture UFM Appliance machines')
-    args.add_argument("-l", "--log",          action='store_true', help="Output internal information useful for debug purposes")
-    args.add_argument("-d", "--dryrun",       action='store_true', help="Run scripts not starting real jobs")
-    args.add_argument("-c", "--config_file",  action='store',      help="Use this config file (in yaml format)", type = str)
+#    args.add_argument("-c", "--config_file",  action='store',      help="Use this config file (in yaml format)", type = str)
     args.add_argument("-i", "--ini_file",     action='store',      help="Use this ini file", type = str)
 
     opts = args.parse_args()
-    set_log(opts.log)
-    set_dryrun(opts.dryrun)
-
-#    if log():
-#        print("Logging is ON")
-
-#    if dryrun():
-#        print("DRYRUN mode")
 
     if not opts.config_file and not opts.ini_file:
         sys.exit('Error: No configuration file was provided. Please use either --ini_file or --config_file option.')
