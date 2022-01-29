@@ -27,7 +27,8 @@ class Remanufacture:
     def __init__(self, options):
         now = datetime.datetime.now()
         ymd = now.strftime("%Y%m%d")
-        logging.basicConfig(filename='remanufacture_'+ymd+'.log', filemode='w', format="%(asctime)s [%(levelname)s]    %(message)s", level=logging.DEBUG)
+        self.logfile = 'remanufacture_'+ymd+'.log'
+        logging.basicConfig(filename=self.logfile, filemode='w', format="%(asctime)s [%(levelname)s]    %(message)s", level=logging.DEBUG)
         self.options = options
         self.remanufacture_done = False
         if not self.options['do_manufact']:
@@ -442,7 +443,7 @@ LABEL linux
             # Step 7: Confirm monitor password?
             logging.debug("Expecting Confirm")
             apl.expect('Confirm')
-            apl.sendline(passwd)
+            apl.sendline(monitor_passwd)
 
             # Step 8: bond0 IPv4 address and masklen? [0.0.0.0/0]
             logging.debug("Expecting bond0")
@@ -464,6 +465,7 @@ LABEL linux
         except pexpect.TIMEOUT:
             print("Initializing UFM Appliance. Got TIMEOUT")
             logging.error("Initializing UFM Appliance. Got TIMEOUT")
+            sys.exit("Got timeout")
 
     def init_ufmapl(self):
         arguments = []
@@ -483,10 +485,7 @@ LABEL linux
         time.sleep(10)
 
 
-    def check_apl_version(self, args):
-        apl_node = args[0]
-        version  = args[1]
-        print_message = args[2]
+    def check_apl_version(self, apl_node, version, print_message):
         if not apl_node or not version:
             print("Checking Appliance version: node name was not provided - skipping")
             logging.warning("Checking Appliance version: node name was not provided - skipping")
@@ -507,7 +506,8 @@ LABEL linux
                 return True
         if print_message:
             print("Incorrect version on :" + apl_node + " Expected: " + version + " But got: " + sss)
-            logging.error("Incorrect version on :" + apl_node + " Expected: " + version +" But got: " + sss)
+            logging.error("Incorrect version on: " + apl_node + " Expected: " + version + " But got: " + sss)
+            sys.exit('Upgrade failed - see log file ' + self.logfile + ' for details.')
         return False
 
     def check_ufm_version(self, version):
@@ -517,10 +517,7 @@ LABEL linux
         n = 0
         for node in UFM_APL_NODES:
             if self.options[node]:
-                arguments.append( (self.options[node], version, True) )
-                n += 1
-        with Pool(processes=n) as pool:
-            result = pool.map(self.check_apl_version, arguments)
+                self.check_apl_version(self.options[node], version, True)
 
     def check_license_on_node(self, node):
         if not node:
