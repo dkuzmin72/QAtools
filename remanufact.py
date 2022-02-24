@@ -834,7 +834,7 @@ LABEL linux
             print("Inservice upgrade: node name was not provided - skipping")
             logging.debug("Inservice upgrade: node name was not provided - skipping")
             return
-        if self.check_apl_version((node, version, False)):
+        if self.check_apl_version(node, version, False):
             print("Inservice upgrade: version " + version + " is already installed on node " + node + ". Skipped.")
             logging.debug("Inservice upgrade: version " + version + " is already installed on node " + node + ". Skipped.")
             return
@@ -858,7 +858,7 @@ LABEL linux
         logging.info("Inservice upgrade finished on node: " + node)
 
         time.sleep(2) # wait couple seconds to wake up
-        self.check_apl_version((node, version, True))
+        self.check_apl_version(node, version, True)
 
 
     def set_additinal_params(self):
