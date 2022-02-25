@@ -857,7 +857,7 @@ LABEL linux
         wait_for_ufmapl(node)
         logging.info("Inservice upgrade finished on node: " + node)
 
-        time.sleep(2) # wait couple seconds to wake up
+        time.sleep(10) # wait 10 seconds to wake up
         self.check_apl_version(node, version, True)
 
 
